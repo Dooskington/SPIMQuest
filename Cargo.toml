@@ -1,0 +1,6 @@
+[package]
+name = "spimquest"
+version = "0.1.0"
+authors = ["Declan Hopkins <hopkins.declan@gmail.com>"]
+
+[dependencies]
