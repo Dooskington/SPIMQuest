@@ -19,12 +19,13 @@ use sdl2::image::*;
 use sdl2::event::*;
 use sdl2::keyboard::*;
 use sdl2::gfx::primitives::DrawRenderer;
+use sdl2::mixer::*;
 use time::*;
 
 pub const WINDOW_TITLE: &'static str = "SPIM Quest";
 pub const WINDOW_WIDTH: u32 = 640;
 pub const WINDOW_HEIGHT: u32 = 480;
-pub const IS_FULLSCREEN: bool = false;
+pub const IS_FULLSCREEN: bool = true;
 pub const FIELD_OF_VIEW: f64 = 90.0;
 
 pub const COLOR_BLACK: Color = Color {r: 0, g: 0, b: 0, a: 255};
@@ -33,12 +34,20 @@ pub const COLOR_RED: Color = Color {r: 255, g: 0, b: 0, a: 255};
 pub const COLOR_GREEN: Color = Color {r: 0, g: 255, b: 0, a: 255};
 pub const COLOR_BLUE: Color = Color {r: 0, g: 0, b: 255, a: 255};
 pub const COLOR_MAGENTA: Color = Color {r: 255, g: 0, b: 255, a: 255};
+pub const COLOR_BARREL: Color = Color {r: 0, g: 128, b: 0, a: 255};
+pub const COLOR_STATUE: Color = Color {r: 128, g: 128, b: 0, a: 255};
+pub const COLOR_GRAVESTONE: Color = Color {r: 255, g: 128, b: 0, a: 255};
 
 pub const TEXTURE_WALL: u32 = 0;
 pub const TEXTURE_CEILING: u32 = 1;
 pub const TEXTURE_FLOOR: u32 = 2;
 pub const TEXTURE_SCHINDLER: u32 = 3;
 pub const TEXTURE_TREASURE: u32 = 4;
+pub const TEXTURE_MONSTER: u32 = 5;
+pub const TEXTURE_BARREL: u32 = 6;
+pub const TEXTURE_STATUE: u32 = 7;
+pub const TEXTURE_GRAVESTONE: u32 = 8;
+pub const TEXTURE_STONE_SCHINDLER: u32 = 9;
 
 pub const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
 
@@ -92,6 +101,26 @@ impl Map {
                     COLOR_RED => {
                         entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_SCHINDLER, true)));
                         next_ent_id += 1;
+                    },
+                    // Monster
+                    COLOR_BLUE => {
+                        entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_MONSTER, true)));
+                        next_ent_id += 1;
+                    },
+                    // Barrel
+                    COLOR_BARREL => {
+                        //entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_BARREL, false)));
+                        //next_ent_id += 1;
+                    },
+                    // Statue
+                    COLOR_STATUE => {
+                        //entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_STATUE, false)));
+                        //next_ent_id += 1;
+                    },
+                    // Gravestone
+                    COLOR_GRAVESTONE => {
+                        //entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_GRAVESTONE, false)));
+                        //next_ent_id += 1;
                     },
                     // Treasure
                     COLOR_GREEN => {
@@ -148,8 +177,8 @@ impl Map {
         for ent in self.entities.iter() {
             let ent = ent.borrow();
 
-            if (x - (ent.x + 0.5)).abs() <= 0.25 &&
-               (y - (ent.y + 0.5)).abs() <= 0.25 {
+            if (x - (ent.x + 0.5)).abs() <= 0.45 &&
+               (y - (ent.y + 0.5)).abs() <= 0.45 {
                 return Some(ent.id);
             }
         }
@@ -194,7 +223,7 @@ impl Map {
         }
     }
 
-    fn entity_movement(&mut self, delta_time: f64) {
+    fn entity_movement(&mut self, ent_speed: f64, delta_time: f64) {
         for ent in self.entities.iter() {
             let mut ent = ent.borrow_mut();
             if ent.follow_player == false {
@@ -202,7 +231,12 @@ impl Map {
             }
 
             // TODO: get this outta here
-            let ent_speed = 1.0 * delta_time;
+            let mut ent_speed = ent_speed * delta_time;
+
+            if (ent.texture_id == TEXTURE_MONSTER) {
+                ent_speed = ent_speed * 0.75;
+            }
+
             if ent.x > (ent.destination.x as f64) {
                 ent.x -= ent_speed;
             }
@@ -414,6 +448,8 @@ pub struct Game {
     input_down: bool,
     input_strafe_left: bool,
     input_strafe_right: bool,
+
+    difficulty: u32
 }
 
 impl Game {
@@ -447,7 +483,13 @@ impl Game {
         textures.insert(TEXTURE_CEILING, Texture::load("res/ceiling.png").unwrap());
         textures.insert(TEXTURE_FLOOR, Texture::load("res/floor.png").unwrap());
         textures.insert(TEXTURE_SCHINDLER, Texture::load("res/schindler.png").unwrap());
-        textures.insert(TEXTURE_TREASURE, Texture::load("res/barrel.png").unwrap());
+        textures.insert(TEXTURE_TREASURE, Texture::load("res/treasure1.png").unwrap());
+        textures.insert(TEXTURE_MONSTER, Texture::load("res/monster.png").unwrap());
+        textures.insert(TEXTURE_BARREL, Texture::load("res/barrel.png").unwrap());
+        textures.insert(TEXTURE_STATUE, Texture::load("res/statue.png").unwrap());
+        textures.insert(TEXTURE_GRAVESTONE, Texture::load("res/gravestone.png").unwrap());
+        //textures.insert(TEXTURE_STONE_SCHINDLER, Texture::load("res/stone-schindler.png").unwrap());
+        //textures.insert(TEXTURE_TREASURE, Texture::load("res/treasure2.png").unwrap());
 
         Game {
             sdl_context: sdl_context,
@@ -456,8 +498,8 @@ impl Game {
             map: map,
             depth_buffer: Vec::with_capacity(WINDOW_WIDTH as usize),
             textures: textures,
-            player_x: 3.5,
-            player_y: 3.5,
+            player_x: 1.5,
+            player_y: 1.5,
             player_rotation: 0.0,
             score: 0,
             input_left: false,
@@ -465,7 +507,8 @@ impl Game {
             input_up: false,
             input_down: false,
             input_strafe_left: false,
-            input_strafe_right: false
+            input_strafe_right: false,
+            difficulty: 0
         }
     }
 
@@ -473,6 +516,7 @@ impl Game {
         let mut last_tick_time: Tm = time::now();
         let mut render_timer: Duration = time::Duration::zero();
         let mut pathfind_timer: Duration = time::Duration::zero();
+        let mut difficulty_timer: Duration = time::Duration::zero();
         let sixty_hz: Duration = time::Duration::nanoseconds(16666667); // TODO: Consider a const?
 
         let mut sdl_event_pump = self.sdl_context.event_pump()
@@ -486,6 +530,7 @@ impl Game {
             let delta_time: f64 = (elapsed_time.num_nanoseconds().unwrap() as f64) / 1_000_000_000_f64;
             render_timer = render_timer + elapsed_time;
             pathfind_timer = pathfind_timer + elapsed_time;
+            difficulty_timer = difficulty_timer + elapsed_time;
 
             // Handle window events
             for event in sdl_event_pump.poll_iter() {
@@ -535,8 +580,8 @@ impl Game {
                 }
             }
 
-            let rotation_speed: f64 = f64::to_radians(150.0);
-            let move_speed: f64 = 3.5;
+            let rotation_speed: f64 = f64::to_radians(180.0);
+            let move_speed: f64 = 2.0 + (self.score as f64 * 0.15);
 
             // Calculate velocity based on input
             let mut velocity_x: f64 = 0.0;
@@ -579,20 +624,33 @@ impl Game {
                 }
             }
 
-            let wait = time::Duration::milliseconds(500);
+            let wait = time::Duration::milliseconds(250);
             if pathfind_timer >= wait {
                 pathfind_timer = pathfind_timer - wait;
                 let goal = Position::new(self.player_x as i32, self.player_y as i32);
                 self.map.pathfind(goal);
             }
 
-            //self.map.entity_movement(delta_time);
+            let wait = time::Duration::seconds(5 + (self.difficulty as i64 * 2));
+            if difficulty_timer >= wait {
+                difficulty_timer = difficulty_timer - wait;
+
+                // Increase difficulty
+                self.difficulty += 1;
+                println!("difficulty increased to {}", self.difficulty);
+            }
+
+            let ent_speed: f64 = (self.difficulty as f64) / 2.0;
+            self.map.entity_movement(ent_speed, delta_time);
 
             if let Some(ent) = self.map.get_overlap_ent(self.player_x, self.player_y) {
                 if self.map.is_treasure(ent) {
                     self.map.delete_ent(ent);
-                    self.score += 100;
-                    println!("Score: {}", self.score);
+                    self.score += 1;
+                }
+                else {
+                    println!("YOU DIED!");
+                    break 'running;
                 }
             }
 
@@ -608,7 +666,8 @@ impl Game {
                 self.sdl_canvas.clear();
 
                 self.render_world();
-                self.sdl_canvas.string(10, 10, &format!("Score: {}", self.score), COLOR_GREEN);
+                self.sdl_canvas.string(10, 10, &format!("CSE 341 Difficulty: {}", self.difficulty), COLOR_WHITE);
+                self.sdl_canvas.string(10, 20, &format!("MIPS Knowledge: {}", self.score), COLOR_WHITE);
 
                 self.sdl_canvas.present();
             }
