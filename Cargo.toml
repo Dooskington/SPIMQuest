@@ -10,4 +10,4 @@ pathfinding = "0.1.13"
 [dependencies.sdl2]
 version = "0.30"
 default-features = false
-features = ["image", "gfx", "mixer"]
+features = ["image", "gfx"]
