@@ -1,10 +1,16 @@
 extern crate sdl2;
 extern crate time;
+extern crate pathfinding;
 
+use pathfinding::astar;
 use std::str;
 use std::path::*;
+use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
+use std::borrow::BorrowMut;
+use std::iter::*;
 use sdl2::*;
-use sdl2::video::Window;
+use sdl2::video::*;
 use sdl2::render::Canvas;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::pixels::Color;
@@ -18,6 +24,7 @@ use time::*;
 pub const WINDOW_TITLE: &'static str = "SPIM Quest";
 pub const WINDOW_WIDTH: u32 = 640;
 pub const WINDOW_HEIGHT: u32 = 480;
+pub const IS_FULLSCREEN: bool = false;
 pub const FIELD_OF_VIEW: f64 = 90.0;
 
 pub const COLOR_BLACK: Color = Color {r: 0, g: 0, b: 0, a: 255};
@@ -27,31 +34,47 @@ pub const COLOR_GREEN: Color = Color {r: 0, g: 255, b: 0, a: 255};
 pub const COLOR_BLUE: Color = Color {r: 0, g: 0, b: 255, a: 255};
 pub const COLOR_MAGENTA: Color = Color {r: 255, g: 0, b: 255, a: 255};
 
+pub const TEXTURE_WALL: u32 = 0;
+pub const TEXTURE_CEILING: u32 = 1;
+pub const TEXTURE_FLOOR: u32 = 2;
+pub const TEXTURE_SCHINDLER: u32 = 3;
+pub const TEXTURE_TREASURE: u32 = 4;
+
 pub const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
 
 pub struct Map {
     pub width: u32,
     pub height: u32,
-    pub tiles: Vec<Option<Tile>>
+    pub tiles: Vec<Option<Tile>>,
+    pub entities: Vec<RefCell<Entity>>
 }
 
 impl Map {
-    pub fn new(width: u32, height: u32, tiles: Vec<Option<Tile>>) -> Map {
+    pub fn new(width: u32, height: u32, tiles: Vec<Option<Tile>>, entities: Vec<RefCell<Entity>>) -> Map {
         Map {
             width: width,
             height: height,
-            tiles: tiles
+            tiles: tiles,
+            entities: entities
         }
     }
 
-    pub fn get_tile(&self, x: u32, y: u32) -> Option<Tile> {
-        self.tiles[((y * self.width) + x) as usize]
+    pub fn get_tile(&self, x: i32, y: i32) -> Option<Tile> {
+        if (x < 0) || (x >= self.width as i32) || (y < 0) || (y >= self.height as i32) {
+            None
+        }
+        else
+        {
+            self.tiles[((y * self.width as i32) + x) as usize]
+        }
     }
 
     pub fn load(file_path: &str) -> std::io::Result<Map> {
         let texture: Texture = Texture::load(file_path)
             .expect(&format!("Failed to load map texture {}", file_path));
 
+        let mut next_ent_id: u32 = 0;
+        let mut entities: Vec<RefCell<Entity>> = Vec::new();
         let mut tiles: Vec<Option<Tile>> = Vec::new();
         tiles.resize((texture.width * texture.height) as usize, None);
 
@@ -63,19 +86,148 @@ impl Map {
                 match color {
                     // Wall
                     COLOR_BLACK => {
-                        tiles[index] = Some(Tile::new(x, y, 0));
+                        tiles[index] = Some(Tile::new(x, y, TEXTURE_WALL));
+                    },
+                    // Schindler
+                    COLOR_RED => {
+                        entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_SCHINDLER, true)));
+                        next_ent_id += 1;
+                    },
+                    // Treasure
+                    COLOR_GREEN => {
+                        entities.push(RefCell::new(Entity::new(next_ent_id, x as f64, y as f64, TEXTURE_TREASURE, false)));
+                        next_ent_id += 1;
                     },
 
-                    // Debug
-                    COLOR_RED => {
-                        tiles[index] = Some(Tile::new(x, y, 1));
-                    },
                     _ => {}
                 }
             }
         }
 
-        Ok(Map::new(texture.width, texture.height, tiles))
+        Ok(Map::new(texture.width, texture.height, tiles, entities))
+    }
+
+    pub fn get_neighbors(&self, pos: Position) -> Vec<(Position, usize)> {
+        let mut neighbors: Vec<(Position, usize)> = Vec::new();
+
+        let up_pos = Position::new(pos.x, pos.y - 1);
+        let down_pos = Position::new(pos.x, pos.y + 1);
+        let left_pos = Position::new(pos.x - 1, pos.y);
+        let right_pos = Position::new(pos.x + 1, pos.y);
+
+        // TODO:
+        // Right now this considers tiles outside of the map? Gotta fix
+
+        let up = self.get_tile(up_pos.x, up_pos.y);
+        if up.is_none() {
+            neighbors.push((up_pos, 1));
+        }
+
+        let down = self.get_tile(down_pos.x, down_pos.y);
+        if down.is_none() {
+            neighbors.push((down_pos, 1));
+        }
+
+        let left = self.get_tile(left_pos.x, left_pos.y);
+        if left.is_none() {
+            neighbors.push((left_pos, 1));
+        }
+
+        let right = self.get_tile(right_pos.x, right_pos.y);
+        if right.is_none() {
+            neighbors.push((right_pos, 1));
+        }
+
+        neighbors
+    }
+
+    pub fn get_overlap_ent(&self, x: f64, y: f64) -> Option<u32> {
+        // TODO:
+        // Make this check collisions in the center of the tile (0.5 offset)
+
+        for ent in self.entities.iter() {
+            let ent = ent.borrow();
+
+            if (x - (ent.x + 0.5)).abs() <= 0.25 &&
+               (y - (ent.y + 0.5)).abs() <= 0.25 {
+                return Some(ent.id);
+            }
+        }
+
+        return None;
+    }
+
+    pub fn delete_ent(&mut self, ent_id: u32) {
+        self.entities.retain(|ent| ent.borrow().id != ent_id);
+    }
+
+    pub fn is_treasure(&self, ent_id: u32) -> bool {
+        if let Some(ent) = self.entities.iter().find(|ent| ent.borrow().id == ent_id) {
+            return ent.borrow().texture_id == TEXTURE_TREASURE;
+        }
+
+        return false;
+    }
+
+    fn pathfind(&mut self, goal: Position) {
+        for ent in self.entities.iter() {
+            let mut ent = ent.borrow_mut();
+            if ent.follow_player == false {
+                continue;
+            }
+
+            let start: Position = Position::new(ent.x as i32, ent.y as i32);
+
+            let mut result = astar(&start.clone(), |p| self.get_neighbors(p.clone()), |p| Position::distance(p, &goal), |p| *p == goal);
+            if let Some(mut value) = result {
+                // If total cost of path is greater than 1
+                if value.1 > 1 {
+                    // Set position to next node
+                    //ent.x = value.0[1].x as f64 + 0.5;
+                    //ent.y = value.0[1].y as f64 + 0.5;
+                    ent.destination = value.0[1];
+                }
+            }
+            else {
+                println!("No path to {:?} from {:?}", start, goal);
+            }
+        }
+    }
+
+    fn entity_movement(&mut self, delta_time: f64) {
+        for ent in self.entities.iter() {
+            let mut ent = ent.borrow_mut();
+            if ent.follow_player == false {
+                continue;
+            }
+
+            // TODO: get this outta here
+            let ent_speed = 1.0 * delta_time;
+            if ent.x > (ent.destination.x as f64) {
+                ent.x -= ent_speed;
+            }
+            else if ent.x < (ent.destination.x as f64) {
+                ent.x += ent_speed;
+            }
+
+            if ((ent.destination.x as f64) - ent.x).abs() <= 0.05 {
+                ent.x = ent.destination.x as f64;
+            }
+
+            if (ent.destination.y as f64) > ent.y {
+                ent.y += ent_speed;
+            }
+            else if (ent.destination.y as f64) < ent.y {
+                ent.y -= ent_speed;
+            }
+
+            if ((ent.destination.y as f64) - ent.y).abs() <= 0.05 {
+                ent.y = ent.destination.y as f64;
+            }
+        }
+
+        //println!("Going to {:?}", ent.destination);
+        //println!("{}, {}", ent.destination.x as f64, ent.destination.y as f64);
     }
 }
 
@@ -94,6 +246,73 @@ impl Tile {
             id: id
         }
     }
+}
+
+#[derive(Copy, Clone)]
+pub struct Entity {
+    pub x: f64,
+    pub y: f64,
+    pub destination: Position,
+    pub texture_id: u32,
+    pub follow_player: bool,
+    pub id: u32,
+    pub is_deleted: bool
+}
+
+impl Entity {
+    pub fn new(id: u32, x: f64, y: f64, texture_id: u32, follow_player: bool) -> Entity {
+        Entity {
+            id: id,
+            x: x,
+            y: y,
+            texture_id: texture_id,
+            destination: Position::new(0, 0),
+            follow_player: follow_player,
+            is_deleted: false
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
+pub struct Vector2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Vector2 {
+    pub fn new(x: f32, y: f32) -> Vector2 {
+        Vector2 { x: x, y: y }
+    }
+
+    pub fn distance(first: &Vector2, other: &Vector2) -> f32 {
+        let (x1, x2) = if first.x > other.x { (first.x, other.x) } else { (other.x, first.x) };
+        let (y1, y2) = if first.y > other.y { (first.y, other.y) } else { (other.y, first.y) };
+
+         ((x1 - x2) + (y1 - y2)) as f32
+     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
+pub struct Position {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Position {
+    pub fn new(x: i32, y: i32) -> Position {
+        Position { x: x, y: y }
+    }
+
+    pub fn to_index(&self, width: usize) -> usize {
+        ((self.y * width as i32) + self.x) as usize
+    }
+
+    pub fn distance(first: &Position, other: &Position) -> usize {
+        let (x1, x2) = if first.x > other.x { (first.x, other.x) } else { (other.x, first.x) };
+        let (y1, y2) = if first.y > other.y { (first.y, other.y) } else { (other.y, first.y) };
+
+         ((x1 - x2) + (y1 - y2)) as usize
+     }
 }
 
 pub struct Texture {
@@ -149,6 +368,23 @@ impl Texture {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct Sprite {
+    pub x: f64,
+    pub y: f64,
+    pub texture_id: u32
+}
+
+impl Sprite {
+    pub fn new(x: f64, y: f64, texture_id: u32) -> Sprite {
+        Sprite {
+            x: x,
+            y: y,
+            texture_id: texture_id
+        }
+    }
+}
+
 pub struct RaycastHit {
     pub x: f64,
     pub y: f64,
@@ -163,10 +399,9 @@ pub struct Game {
     sdl_canvas: Canvas<Window>,
     start_time: Tm,
     map: Map,
+    depth_buffer: Vec<f64>,
 
-    wall_texture: Texture,
-    ceiling_texture: Texture,
-    floor_texture: Texture,
+    textures: HashMap<u32, Texture>,
 
     player_x: f64,
     player_y: f64,
@@ -176,7 +411,7 @@ pub struct Game {
     input_up: bool,
     input_down: bool,
     input_strafe_left: bool,
-    input_strafe_right: bool
+    input_strafe_right: bool,
 }
 
 impl Game {
@@ -184,11 +419,17 @@ impl Game {
         let sdl_context: Sdl = ::sdl2::init().expect("Failed to initialize SDL!");
         let sdl_video: VideoSubsystem = sdl_context.video().expect("Failed to initialize video!");
 
-        let sdl_window: Window = sdl_video.window(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT)
+        sdl_context.mouse().show_cursor(false);
+
+        let mut sdl_window: Window = sdl_video.window(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT)
             .position_centered()
             .opengl()
             .build()
             .expect("Failed to create window!");
+
+        if IS_FULLSCREEN {
+            sdl_window.set_fullscreen(FullscreenType::True);
+        }
 
         let sdl_canvas: Canvas<Window> = sdl_window
             .into_canvas()
@@ -199,14 +440,20 @@ impl Game {
         let map = Map::load("res/maps/level1.png")
             .expect("Failed to load map!");
 
+        let mut textures: HashMap<u32, Texture> = HashMap::new();
+        textures.insert(TEXTURE_WALL, Texture::load("res/wall.png").unwrap());
+        textures.insert(TEXTURE_CEILING, Texture::load("res/ceiling.png").unwrap());
+        textures.insert(TEXTURE_FLOOR, Texture::load("res/floor.png").unwrap());
+        textures.insert(TEXTURE_SCHINDLER, Texture::load("res/schindler.png").unwrap());
+        textures.insert(TEXTURE_TREASURE, Texture::load("res/barrel.png").unwrap());
+
         Game {
             sdl_context: sdl_context,
             sdl_canvas: sdl_canvas,
             start_time: time::now(),
             map: map,
-            wall_texture: Texture::load("res/wall.png").unwrap(),
-            ceiling_texture: Texture::load("res/ceiling.png").unwrap(),
-            floor_texture: Texture::load("res/floor.png").unwrap(),
+            depth_buffer: Vec::with_capacity(WINDOW_WIDTH as usize),
+            textures: textures,
             player_x: 3.5,
             player_y: 3.5,
             player_rotation: 0.0,
@@ -222,6 +469,7 @@ impl Game {
     pub fn run(&mut self) {
         let mut last_tick_time: Tm = time::now();
         let mut render_timer: Duration = time::Duration::zero();
+        let mut pathfind_timer: Duration = time::Duration::zero();
         let sixty_hz: Duration = time::Duration::nanoseconds(16666667); // TODO: Consider a const?
 
         let mut sdl_event_pump = self.sdl_context.event_pump()
@@ -230,9 +478,11 @@ impl Game {
         'running: loop {
             // Timing
             let current_time: Tm = time::now();
+            let total_time: Duration = current_time - self.start_time;
             let elapsed_time: Duration = current_time - last_tick_time;
             let delta_time: f64 = (elapsed_time.num_nanoseconds().unwrap() as f64) / 1_000_000_000_f64;
             render_timer = render_timer + elapsed_time;
+            pathfind_timer = pathfind_timer + elapsed_time;
 
             // Handle window events
             for event in sdl_event_pump.poll_iter() {
@@ -317,21 +567,38 @@ impl Game {
                 let new_position_x = self.player_x + (velocity_x * delta_time);
                 let new_position_y = self.player_y + (velocity_y * delta_time);
 
-                if self.map.get_tile(new_position_x.trunc() as u32, self.player_y.trunc() as u32).is_none() {
+                if self.map.get_tile(new_position_x.trunc() as i32, self.player_y.trunc() as i32).is_none() {
                     self.player_x = new_position_x;
                 }
 
-                if self.map.get_tile(self.player_x.trunc() as u32, new_position_y.trunc() as u32).is_none() {
+                if self.map.get_tile(self.player_x.trunc() as i32, new_position_y.trunc() as i32).is_none() {
                     self.player_y = new_position_y;
+                }
+            }
+
+            let wait = time::Duration::milliseconds(500);
+            if pathfind_timer >= wait {
+                pathfind_timer = pathfind_timer - wait;
+                let goal = Position::new(self.player_x as i32, self.player_y as i32);
+                self.map.pathfind(goal);
+            }
+
+            //self.map.entity_movement(delta_time);
+
+            if let Some(ent) = self.map.get_overlap_ent(self.player_x, self.player_y) {
+                if self.map.is_treasure(ent) {
+                    self.map.delete_ent(ent);
                 }
             }
 
             // TODO:
             // This may be broken
-            last_tick_time = time::now();
+            last_tick_time = current_time;
 
             // Render
             if render_timer >= sixty_hz {
+                render_timer = render_timer - sixty_hz;
+
                 self.sdl_canvas.set_draw_color(COLOR_BLACK);
                 self.sdl_canvas.clear();
 
@@ -383,12 +650,13 @@ impl Game {
 
             // Calculate the actual distance
             let intersection_distance = intersection.distance.sqrt() * (rotation - ray_angle).cos();
+            self.depth_buffer.push(intersection_distance);
 
-            let tile = self.map.get_tile(intersection.tile_x, intersection.tile_y).unwrap();
+            let tile = self.map.get_tile(intersection.tile_x as i32, intersection.tile_y as i32).unwrap();
 
-            let ref wall_texture: Texture = self.wall_texture;
-            let ref ceiling_texture: Texture = self.ceiling_texture;
-            let ref floor_texture: Texture = self.floor_texture;
+            let wall_texture: &Texture = self.get_texture(TEXTURE_WALL);
+            let ceiling_texture: &Texture = self.get_texture(TEXTURE_CEILING);
+            let floor_texture: &Texture = self.get_texture(TEXTURE_FLOOR);
 
             // Calculate the x texel of this wall strip
             let wall_texture_x: u32 = if intersection.tile_side == 0 {
@@ -466,7 +734,7 @@ impl Game {
                     let texture_y: u32 = f64::floor(ceiling_hit_y * (ceiling_texture.height - 1) as f64) as u32;
 
                     let ceiling_lighting: f64 = self.calculate_lighting(ceiling_straight_distance.abs(), light_radius);
-                    let mut color: Color = ceiling_texture.get_pixel(texture_x, texture_y);;
+                    let mut color: Color = ceiling_texture.get_pixel(texture_x, texture_y);
                     color.r = (color.r as f64 * ceiling_lighting) as u8;
                     color.g = (color.g as f64 * ceiling_lighting) as u8;
                     color.b = (color.b as f64 * ceiling_lighting) as u8;
@@ -477,6 +745,99 @@ impl Game {
             }
         }
 
+        // Sort sprites (far to near)
+        self.map.entities.sort_by(|a, b| {
+            let a = a.borrow();
+            let b = b.borrow();
+
+            let a_distance: f64 = (a.x - origin_x).powi(2) + (a.y - origin_y).powi(2);
+            let b_distance: f64 = (b.x - origin_x).powi(2) + (b.y - origin_y).powi(2);
+
+            b_distance.partial_cmp(&a_distance).unwrap()
+        });
+
+        // Render sprites
+        for sprite in self.map.entities.iter() {
+            let sprite = sprite.borrow();
+
+            let distance_x: f64 = (sprite.x + 0.5) - origin_x;
+            let distance_y: f64 = (sprite.y + 0.5) - origin_y;
+
+            // The angle between the player and the sprite
+            let mut theta: f64 = f64::atan2(distance_y, distance_x);
+            theta = self.wrap_angle(theta);
+
+            // The angle between the player and the sprite, relative to the player rotation
+            let mut gamma: f64 = theta - rotation;
+            gamma = self.wrap_angle(gamma);
+
+            let sprite_distance: f64 = f64::sqrt(distance_x.powi(2) + distance_y.powi(2)) * f64::cos(rotation - theta);
+            let lighting: f64 = self.calculate_lighting(sprite_distance, light_radius);
+
+            // The number of pixels to offset from the center of the screen
+            let sprite_pixel_offset: f64 = f64::tan(gamma) * projection_distance;
+            let sprite_screen_x: i32 = f64::round((projection_width as f64 / 2.0) + sprite_pixel_offset) as i32;
+
+            let sprite_height: i32 = (f64::round(projection_distance / sprite_distance) as i32).wrapping_abs();
+            let sprite_width: i32 = (f64::round(projection_distance / sprite_distance) as i32).wrapping_abs();
+            if (sprite_height == 0) || (sprite_width == 0) {
+                continue;
+            }
+
+            let sprite_screen_start_x: i32 = sprite_screen_x - (sprite_width / 2);
+            let sprite_screen_end_x: i32 = sprite_screen_x + (sprite_width / 2);
+            let sprite_screen_start_y: i32 = -(sprite_height / 2) + (projection_height as i32 / 2);
+            let sprite_screen_end_y: i32 = (sprite_height / 2) + (projection_height as i32 / 2);
+
+            let mut camera_min_angle: f64 = -FIELD_OF_VIEW.to_radians() / 2.0;
+            camera_min_angle = self.wrap_angle(camera_min_angle);
+
+            let mut camera_max_angle: f64 = FIELD_OF_VIEW.to_radians() / 2.0;
+            camera_max_angle = self.wrap_angle(camera_max_angle);
+
+            let texture: &Texture = self.get_texture(sprite.texture_id);
+
+            for sprite_screen_row in sprite_screen_start_x..sprite_screen_end_x {
+                if (sprite_screen_row < 0) || (sprite_screen_row >= projection_width as i32) {
+                    continue;
+                }
+
+                // If the sprite is not visible, don't render it.
+                if ((gamma < camera_min_angle) && (gamma > camera_max_angle)) ||
+                    (self.depth_buffer[sprite_screen_row as usize] < sprite_distance) {
+                    continue;
+                }
+
+                for sprite_screen_col in sprite_screen_start_y..sprite_screen_end_y {
+                    if (sprite_screen_col < 0) || (sprite_screen_col >= projection_height as i32) {
+                        continue;
+                    }
+
+                    let sprite_row = sprite_screen_row - sprite_screen_start_x;
+                    let sprite_col = sprite_screen_col - sprite_screen_start_y;
+
+                    let texture_x: u32 = f64::round((sprite_row as f64 / sprite_width as f64) * (texture.width - 1) as f64) as u32;
+                    let texture_y: u32 = f64::round((sprite_col as f64 / sprite_height as f64) * (texture.height - 1) as f64) as u32;
+
+                    let mut color: Color = texture.get_pixel(texture_x, texture_y);
+                    if color.a == 0 {
+                        continue;
+                    }
+
+                    color.r = (color.r as f64 * lighting) as u8;
+                    color.g = (color.g as f64 * lighting) as u8;
+                    color.b = (color.b as f64 * lighting) as u8;
+
+                    self.sdl_canvas.pixel(sprite_screen_row as i16, sprite_screen_col as i16, color);
+                }
+            }
+        }
+
+        self.depth_buffer.clear();
+    }
+
+    fn get_texture(&self, id: u32) -> &Texture {
+        self.textures.get(&id).unwrap()
     }
 
     fn raycast(&self, origin_x: f64, origin_y: f64, angle: f64) -> RaycastHit {
@@ -511,7 +872,7 @@ impl Game {
             let tile_map_x: u32 = f64::floor(ray_position_x + (if is_ray_right { 0.0 } else { -tile_size })) as u32;
             let tile_map_y: u32 = f64::floor(ray_position_y) as u32;
 
-            if let Some(tile) = self.map.get_tile(tile_map_x, tile_map_y) {
+            if let Some(tile) = self.map.get_tile(tile_map_x as i32, tile_map_y as i32) {
                 let mut distance_x: f64 = ray_position_x - origin_x;
                 let mut distance_y: f64 = ray_position_y - origin_y;
 
@@ -546,7 +907,7 @@ impl Game {
             let tile_map_x: u32 = f64::floor(ray_position_x) as u32;
             let tile_map_y: u32 = f64::floor(ray_position_y + (if is_ray_up { -tile_size } else { 0.0 })) as u32;
 
-            if let Some(tile) = self.map.get_tile(tile_map_x, tile_map_y) {
+            if let Some(tile) = self.map.get_tile(tile_map_x as i32, tile_map_y as i32) {
                 let distance_x: f64 = ray_position_x - origin_x;
                 let distance_y: f64 = ray_position_y - origin_y;
                 let x_intersection_distance = distance_x.powi(2) + distance_y.powi(2);
