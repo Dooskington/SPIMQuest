@@ -406,6 +406,8 @@ pub struct Game {
     player_x: f64,
     player_y: f64,
     player_rotation: f64,
+    score: u32,
+
     input_left: bool,
     input_right: bool,
     input_up: bool,
@@ -457,6 +459,7 @@ impl Game {
             player_x: 3.5,
             player_y: 3.5,
             player_rotation: 0.0,
+            score: 0,
             input_left: false,
             input_right: false,
             input_up: false,
@@ -588,6 +591,8 @@ impl Game {
             if let Some(ent) = self.map.get_overlap_ent(self.player_x, self.player_y) {
                 if self.map.is_treasure(ent) {
                     self.map.delete_ent(ent);
+                    self.score += 100;
+                    println!("Score: {}", self.score);
                 }
             }
 
@@ -603,6 +608,7 @@ impl Game {
                 self.sdl_canvas.clear();
 
                 self.render_world();
+                self.sdl_canvas.string(10, 10, &format!("Score: {}", self.score), COLOR_GREEN);
 
                 self.sdl_canvas.present();
             }
