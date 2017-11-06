@@ -19,7 +19,6 @@ use sdl2::image::*;
 use sdl2::event::*;
 use sdl2::keyboard::*;
 use sdl2::gfx::primitives::DrawRenderer;
-use sdl2::mixer::*;
 use time::*;
 
 pub const WINDOW_TITLE: &'static str = "SPIM Quest";
